@@ -32,6 +32,16 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cstring>
 #include <fstream>
 
+namespace {
+void EnableActiveMaxTracking(XCDFFieldDataBase& base) {
+  base.SetTrackActiveMax(true);
+}
+
+void DisableActiveMaxTracking(XCDFFieldDataBase& base) {
+  base.SetTrackActiveMax(false);
+}
+}
+
 void XCDFFile::Init() {
 
   blockSize_ = 1000;
@@ -522,6 +532,21 @@ void XCDFFile::ReadEvent() {
   eventCount_++;
 }
 
+void XCDFFile::SkipEvent() {
+
+  assert(blockEventCount_ > 0);
+
+  // Advance through one event. Decode only fields needed as vector parents;
+  // other fields can be skipped at the bit level.
+  for (FieldList::iterator it = fieldList_.begin();
+                           it != fieldList_.end(); ++it) {
+    (*it)->Skip(blockData_);
+  }
+
+  blockEventCount_--;
+  eventCount_++;
+}
+
 bool XCDFFile::ReadNextBlock() {
 
   assert(IsReadable());
@@ -802,6 +827,9 @@ void XCDFFile::ReadFileHeaders() {
 
   if (blockTableComplete_ && !unusableGlobalsFromFile_) {
     haveV3Globals_ = true;
+    if (!isAppend_) {
+      FieldListForEach(DisableActiveMaxTracking);
+    }
   }
 
   // Return to the first block in the file --
@@ -1042,11 +1070,12 @@ bool XCDFFile::Seek(uint64_t absoluteEventPos) {
     }
   }
 
-  // At the proper block.  Go to the proper event.
+  // At the proper block.  Skip uninterested events and load the target.
   assert(absoluteEventPos - eventCount_ < blockEventCount_);
-  while (eventCount_ <= absoluteEventPos) {
-    ReadEvent();
+  while (eventCount_ < absoluteEventPos) {
+    SkipEvent();
   }
+  ReadEvent();
 
   return true;
 }
@@ -1121,11 +1150,13 @@ void XCDFFile::CheckGlobals() {
     // we need to reset field byte counts
     FieldListForEach(ClearFieldBitsProcessed);
   }
+  FieldListForEach(EnableActiveMaxTracking);
   // Read all the remaining data
   while (Read());
   // Calculate the globals
   FieldListForEach(CalculateGlobals);
   haveV3Globals_ = true;
+  FieldListForEach(DisableActiveMaxTracking);
   // Return file to original position if possible
   if (currentEventCount == 0) {
     seekSuccess = Rewind();
@@ -1157,9 +1188,10 @@ void XCDFFile::AllocateField(const std::string& name,
 
   CheckName(name);
 
-  const XCDFFieldDataBase* parent = NULL;
+  XCDFFieldDataBase* parent = NULL;
   if (parentName.compare(NO_PARENT)) {
-    parent = CheckParent(parentName);
+    parent = const_cast<XCDFFieldDataBase*>(CheckParent(parentName));
+    parent->SetParentField();
   }
 
   // If writing, put the descriptor into the header

@@ -52,11 +52,15 @@ class XCDFFieldDataBase {
     virtual ~XCDFFieldDataBase() { }
 
     virtual void Load(XCDFBlockData& data) = 0;
+    virtual void Skip(XCDFBlockData& data) = 0;
     virtual void Dump(XCDFBlockData& data) = 0;
     virtual void Stash() = 0;
     virtual void Unstash() = 0;
     virtual void Clear() = 0;
     virtual uint64_t GetStashSize() const = 0;
+    virtual bool IsParentField() const = 0;
+    virtual void SetParentField(bool isParentField = true) = 0;
+    virtual void SetTrackActiveMax(bool trackActiveMax = true) = 0;
     virtual void ZeroAlign() = 0;
     virtual void SetActiveSize(const uint32_t activeSize) = 0;
     virtual void Shrink() = 0;

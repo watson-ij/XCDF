@@ -659,6 +659,7 @@ class XCDFFile {
     void WriteBlock();
     void WriteEvent();
     void ReadEvent();
+    void SkipEvent();
     bool ReadNextBlock();
     bool GetNextBlockWithEvents();
     bool DoSeek(const std::streampos& pos);

@@ -96,6 +96,8 @@ class XCDFFieldData : public XCDFFieldDataBase {
                                    globalMinSet_(false),
                                    globalMaxSet_(false),
                                    activeSize_(SIZE_UNSET),
+                                   isParentField_(false),
+                                   trackActiveMax_(true),
                                    totalBytes_(0),
                                    bitsProcessed_(0) { }
 
@@ -155,6 +157,14 @@ class XCDFFieldData : public XCDFFieldDataBase {
     virtual uint64_t GetBitsProcessed() const {return bitsProcessed_;}
 
     virtual uint64_t GetStashSize() const {return stash_.size();}
+
+    virtual bool IsParentField() const {return isParentField_;}
+    virtual void SetParentField(bool isParentField = true) {
+      isParentField_ = isParentField;
+    }
+    virtual void SetTrackActiveMax(bool trackActiveMax = true) {
+      trackActiveMax_ = trackActiveMax;
+    }
 
     /*
      * Get the compressed size of each datum in the field (in bytes)
@@ -286,6 +296,15 @@ class XCDFFieldData : public XCDFFieldDataBase {
     /// Number of bits needed for this field in the current block
     mutable uint32_t activeSize_;
 
+    /// Whether another field uses this field as a vector parent. Parent fields
+    /// must be decoded while seeking so child vector lengths are known.
+    bool isParentField_;
+
+    /// Whether active max should be rediscovered during reads. This is needed
+    /// for files without usable trailer globals, but avoidable for normal v3
+    /// files where globals are already available.
+    bool trackActiveMax_;
+
     /// Storage for data held in write cache, awaiting max/min limits to be set
     std::deque<T> stash_;
 
@@ -318,10 +337,18 @@ class XCDFFieldData : public XCDFFieldDataBase {
      */
     T LoadValue(XCDFBlockData& data) {
       T value = CalculateTypeValue(data.GetDatum(activeSize_));
-      // We only have the active min.  We need to rediscover the max.
-      CheckActiveMax(value);
+      // When trailer globals are unavailable, rediscover the active max so
+      // global range calculations still work after scanning the file.
+      if (trackActiveMax_) {
+        CheckActiveMax(value);
+      }
       bitsProcessed_ += activeSize_;
       return value;
+    }
+
+    void SkipValue(XCDFBlockData& data) {
+      data.SkipDatum(activeSize_);
+      bitsProcessed_ += activeSize_;
     }
 
     /*

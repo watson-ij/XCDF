@@ -68,6 +68,19 @@ class XCDFFieldDataVector : public XCDFFieldData<T> {
         data_.Push(XCDFFieldData<T>::LoadValue(data));
       }
     }
+    virtual void Skip(XCDFBlockData& data) {
+      data_.Clear();
+      unsigned cnt = GetExpectedSize();
+      if (XCDFFieldData<T>::IsParentField()) {
+        for (unsigned i = 0; i < cnt; ++i) {
+          data_.Push(XCDFFieldData<T>::LoadValue(data));
+        }
+      } else {
+        for (unsigned i = 0; i < cnt; ++i) {
+          XCDFFieldData<T>::SkipValue(data);
+        }
+      }
+    }
     virtual void Dump(XCDFBlockData& data) {
       for (ConstIterator it = Begin(); it != End(); ++it) {
         XCDFFieldData<T>::DumpValue(data, *it);

@@ -16,6 +16,7 @@
 **/_skbuild
 # CMake
 **/build
+**/build-*/
 **/generated
 
 # Documentation
@@ -26,6 +27,7 @@ docs/source/api/xcdf*.rst
 
 # Data files
 **/*.xcd
+perf-fixtures/
 
 # Python gitignore:
 # Byte-compiled / optimized / DLL files

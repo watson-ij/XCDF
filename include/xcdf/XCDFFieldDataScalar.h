@@ -63,6 +63,14 @@ class XCDFFieldDataScalar : public XCDFFieldData<T> {
       hasData_ = 1;
       datum_ = XCDFFieldData<T>::LoadValue(data);
     }
+    virtual void Skip(XCDFBlockData& data) {
+      if (XCDFFieldData<T>::IsParentField()) {
+        Load(data);
+      } else {
+        hasData_ = 0;
+        XCDFFieldData<T>::SkipValue(data);
+      }
+    }
     virtual void Dump(XCDFBlockData& data) {
       XCDFFieldData<T>::DumpValue(data, datum_);
       hasData_ = 0;
