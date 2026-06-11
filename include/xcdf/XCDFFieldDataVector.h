@@ -64,6 +64,13 @@ class XCDFFieldDataVector : public XCDFFieldData<T> {
     virtual void Load(XCDFBlockData& data) {
       data_.Clear();
       unsigned cnt = GetExpectedSize();
+      if (XCDFFieldData<T>::GetActiveSize() == 0) {
+        data_.Assign(cnt, XCDFFieldData<T>::activeMin_);
+        if (XCDFFieldData<T>::trackActiveMax_) {
+          XCDFFieldData<T>::CheckActiveMax(XCDFFieldData<T>::activeMin_);
+        }
+        return;
+      }
       for (unsigned i = 0; i < cnt; ++i) {
         data_.Push(XCDFFieldData<T>::LoadValue(data));
       }
@@ -162,6 +169,13 @@ class XCDFFieldDataVector : public XCDFFieldData<T> {
         }
         const U* Begin() const {return begin_;}
         const U* End() const {return next_;}
+        void Assign(unsigned size, const U& value) {
+          if (static_cast<unsigned>(last_ - begin_) < size) {
+            Reallocate(size);
+          }
+          std::fill(begin_, begin_ + size, value);
+          next_ = begin_ + size;
+        }
         void Push(const U& t) {
           if (next_ == last_) {
             // Double our space

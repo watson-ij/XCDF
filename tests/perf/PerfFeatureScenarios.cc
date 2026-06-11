@@ -418,8 +418,6 @@ uint64_t HawcTrigCount(uint64_t events, unsigned seekCount) {
 uint64_t HawcTrigReadFull(const std::string& path, uint64_t events, unsigned unused) {
   (void)unused;
   XCDFFile f(path.c_str(), "r");
-  uint64_t available = f.GetEventCount();
-  uint64_t limit = std::min<uint64_t>(events, available);
 
   XCDFUnsignedIntegerField eventID = f.GetUnsignedIntegerField("trig.eventID");
   XCDFUnsignedIntegerField timeSliceID = f.GetUnsignedIntegerField("trig.timeSliceID");
@@ -436,7 +434,7 @@ uint64_t HawcTrigReadFull(const std::string& path, uint64_t events, unsigned unu
   XCDFUnsignedIntegerField channel2Edge = f.GetUnsignedIntegerField("trig.channelID_2Edge");
 
   uint64_t checksum = 0;
-  for (uint64_t i = 0; i < limit; ++i) {
+  for (uint64_t i = 0; i < events; ++i) {
     if (!f.Read()) {
       XCDFFatal("Unexpected EOF in HAWC trigger fixture read");
     }
@@ -465,8 +463,6 @@ uint64_t HawcTrigReadFull(const std::string& path, uint64_t events, unsigned unu
 uint64_t HawcTrigReadScalars(const std::string& path, uint64_t events, unsigned unused) {
   (void)unused;
   XCDFFile f(path.c_str(), "r");
-  uint64_t available = f.GetEventCount();
-  uint64_t limit = std::min<uint64_t>(events, available);
 
   XCDFUnsignedIntegerField eventID = f.GetUnsignedIntegerField("trig.eventID");
   XCDFUnsignedIntegerField timeSliceID = f.GetUnsignedIntegerField("trig.timeSliceID");
@@ -476,7 +472,7 @@ uint64_t HawcTrigReadScalars(const std::string& path, uint64_t events, unsigned 
   XCDFUnsignedIntegerField nHit2Edge = f.GetUnsignedIntegerField("trig.nHit2Edge");
 
   uint64_t checksum = 0;
-  for (uint64_t i = 0; i < limit; ++i) {
+  for (uint64_t i = 0; i < events; ++i) {
     if (!f.Read()) {
       XCDFFatal("Unexpected EOF in HAWC trigger scalar fixture read");
     }
@@ -491,7 +487,111 @@ uint64_t HawcTrigReadScalars(const std::string& path, uint64_t events, unsigned 
   return checksum;
 }
 
+uint64_t HawcTrigReadNHitFiltered(const std::string& path,
+                                  uint64_t events,
+                                  unsigned unused) {
+  (void)unused;
+  XCDFFile f(path.c_str(), "r");
+  const uint64_t minHits = 200;
+
+  XCDFUnsignedIntegerField eventID = f.GetUnsignedIntegerField("trig.eventID");
+  XCDFUnsignedIntegerField nHit4Edge = f.GetUnsignedIntegerField("trig.nHit4Edge");
+  XCDFUnsignedIntegerField nHit2Edge = f.GetUnsignedIntegerField("trig.nHit2Edge");
+  XCDFSignedIntegerField hitTime4Edge = f.GetSignedIntegerField("trig.hitTime_4Edge");
+  XCDFUnsignedIntegerField loTOT4Edge = f.GetUnsignedIntegerField("trig.loTOT_4Edge");
+  XCDFUnsignedIntegerField hiTOT4Edge = f.GetUnsignedIntegerField("trig.hiTOT_4Edge");
+  XCDFUnsignedIntegerField channel4Edge = f.GetUnsignedIntegerField("trig.channelID_4Edge");
+  XCDFSignedIntegerField hitTime2Edge = f.GetSignedIntegerField("trig.hitTime_2Edge");
+  XCDFUnsignedIntegerField loTOT2Edge = f.GetUnsignedIntegerField("trig.loTOT_2Edge");
+  XCDFUnsignedIntegerField channel2Edge = f.GetUnsignedIntegerField("trig.channelID_2Edge");
+
+  uint64_t selected = 0;
+  uint64_t checksum = 0;
+  for (uint64_t i = 0; i < events; ++i) {
+    if (!f.Read()) {
+      XCDFFatal("Unexpected EOF in HAWC trigger filtered fixture read");
+    }
+    uint64_t nHit = *nHit4Edge + *nHit2Edge;
+    checksum = Mix(checksum, *eventID);
+    checksum = Mix(checksum, nHit);
+    if (nHit < minHits) {
+      continue;
+    }
+    selected++;
+    for (unsigned j = 0; j < hitTime4Edge.GetSize(); ++j) {
+      checksum = Mix(checksum, static_cast<uint64_t>(hitTime4Edge[j]));
+      checksum = Mix(checksum, loTOT4Edge[j]);
+      checksum = Mix(checksum, hiTOT4Edge[j]);
+      checksum = Mix(checksum, channel4Edge[j]);
+    }
+    for (unsigned j = 0; j < hitTime2Edge.GetSize(); ++j) {
+      checksum = Mix(checksum, static_cast<uint64_t>(hitTime2Edge[j]));
+      checksum = Mix(checksum, loTOT2Edge[j]);
+      checksum = Mix(checksum, channel2Edge[j]);
+    }
+  }
+  f.Close();
+  return Mix(checksum, selected);
+}
+
+uint64_t HawcTrigReadNHitLazy(const std::string& path,
+                              uint64_t events,
+                              unsigned unused) {
+  (void)unused;
+  XCDFFile f(path.c_str(), "r");
+  const uint64_t minHits = 200;
+
+  XCDFUnsignedIntegerField eventID = f.GetUnsignedIntegerField("trig.eventID");
+  XCDFUnsignedIntegerField nHit4Edge = f.GetUnsignedIntegerField("trig.nHit4Edge");
+  XCDFUnsignedIntegerField nHit2Edge = f.GetUnsignedIntegerField("trig.nHit2Edge");
+  XCDFSignedIntegerField hitTime4Edge = f.GetSignedIntegerField("trig.hitTime_4Edge");
+  XCDFUnsignedIntegerField loTOT4Edge = f.GetUnsignedIntegerField("trig.loTOT_4Edge");
+  XCDFUnsignedIntegerField hiTOT4Edge = f.GetUnsignedIntegerField("trig.hiTOT_4Edge");
+  XCDFUnsignedIntegerField channel4Edge = f.GetUnsignedIntegerField("trig.channelID_4Edge");
+  XCDFSignedIntegerField hitTime2Edge = f.GetSignedIntegerField("trig.hitTime_2Edge");
+  XCDFUnsignedIntegerField loTOT2Edge = f.GetUnsignedIntegerField("trig.loTOT_2Edge");
+  XCDFUnsignedIntegerField channel2Edge = f.GetUnsignedIntegerField("trig.channelID_2Edge");
+
+  std::vector<std::string> predicateFields;
+  predicateFields.push_back("trig.eventID");
+  predicateFields.push_back("trig.nHit4Edge");
+  predicateFields.push_back("trig.nHit2Edge");
+  XCDFFile::ReadSelector predicateSelector = f.MakeReadSelector(predicateFields);
+
+  uint64_t selected = 0;
+  uint64_t checksum = 0;
+  for (uint64_t i = 0; i < events; ++i) {
+    if (!f.Read(predicateSelector)) {
+      XCDFFatal("Unexpected EOF in HAWC trigger lazy fixture read");
+    }
+    uint64_t nHit = *nHit4Edge + *nHit2Edge;
+    checksum = Mix(checksum, *eventID);
+    checksum = Mix(checksum, nHit);
+    if (nHit < minHits) {
+      continue;
+    }
+    f.ReloadCurrentEvent();
+    selected++;
+    for (unsigned j = 0; j < hitTime4Edge.GetSize(); ++j) {
+      checksum = Mix(checksum, static_cast<uint64_t>(hitTime4Edge[j]));
+      checksum = Mix(checksum, loTOT4Edge[j]);
+      checksum = Mix(checksum, hiTOT4Edge[j]);
+      checksum = Mix(checksum, channel4Edge[j]);
+    }
+    for (unsigned j = 0; j < hitTime2Edge.GetSize(); ++j) {
+      checksum = Mix(checksum, static_cast<uint64_t>(hitTime2Edge[j]));
+      checksum = Mix(checksum, loTOT2Edge[j]);
+      checksum = Mix(checksum, channel2Edge[j]);
+    }
+  }
+  f.Close();
+  return Mix(checksum, selected);
+}
+
 uint64_t HawcTrigSeek(const std::string& path, uint64_t events, unsigned count) {
+  if (count == 0 || events == 0) {
+    return 0;
+  }
   XCDFFile f(path.c_str(), "r");
   uint64_t available = f.GetEventCount();
   uint64_t limit = std::min<uint64_t>(events, available);
@@ -538,6 +638,142 @@ uint64_t HawcTrigGlobalRanges(const std::string& path, uint64_t events, unsigned
   checksum = Mix(checksum, loRange.second);
   checksum = Mix(checksum, static_cast<uint64_t>(timeRange.first));
   checksum = Mix(checksum, static_cast<uint64_t>(timeRange.second));
+  f.Close();
+  return checksum;
+}
+
+uint64_t HawcMcCount(uint64_t events, unsigned seekCount) {
+  (void)seekCount;
+  return events;
+}
+
+uint64_t HawcMcReadFull(const std::string& path, uint64_t events, unsigned unused) {
+  (void)unused;
+  XCDFFile f(path.c_str(), "r");
+
+  XCDFUnsignedIntegerField nHit = f.GetUnsignedIntegerField("event.nHit");
+  XCDFUnsignedIntegerField gridId = f.GetUnsignedIntegerField("event.hit.gridId");
+  XCDFUnsignedIntegerField channelIsGood = f.GetUnsignedIntegerField("event.hit.channelIsGood");
+  XCDFUnsignedIntegerField stdSelected = f.GetUnsignedIntegerField("stdCuts.isSelected");
+  XCDFFloatingPointField hitTime = f.GetFloatingPointField("event.hit.time");
+  XCDFFloatingPointField hitCharge = f.GetFloatingPointField("event.hit.charge");
+  XCDFFloatingPointField zenith = f.GetFloatingPointField("rec.zenithAngle");
+  XCDFFloatingPointField azimuth = f.GetFloatingPointField("rec.azimuthAngle");
+  XCDFFloatingPointField coreX = f.GetFloatingPointField("rec.coreX");
+  XCDFFloatingPointField coreY = f.GetFloatingPointField("rec.coreY");
+  XCDFFloatingPointField logEnergy = f.GetFloatingPointField("mc.logEnergy");
+  XCDFFloatingPointField eventWeight = f.GetFloatingPointField("mc.eventWeight");
+
+  uint64_t checksum = 0;
+  for (uint64_t i = 0; i < events; ++i) {
+    if (!f.Read()) {
+      XCDFFatal("Unexpected EOF in HAWC MC fixture read");
+    }
+    checksum = Mix(checksum, *nHit);
+    checksum = Mix(checksum, DoubleBits(*zenith));
+    checksum = Mix(checksum, DoubleBits(*azimuth));
+    checksum = Mix(checksum, DoubleBits(*coreX));
+    checksum = Mix(checksum, DoubleBits(*coreY));
+    checksum = Mix(checksum, DoubleBits(*logEnergy));
+    checksum = Mix(checksum, DoubleBits(*eventWeight));
+    for (unsigned j = 0; j < hitCharge.GetSize(); ++j) {
+      checksum = Mix(checksum, gridId[j]);
+      checksum = Mix(checksum, channelIsGood[j]);
+      checksum = Mix(checksum, stdSelected[j]);
+      checksum = Mix(checksum, DoubleBits(hitTime[j]));
+      checksum = Mix(checksum, DoubleBits(hitCharge[j]));
+    }
+  }
+  f.Close();
+  return checksum;
+}
+
+uint64_t HawcMcReadScalars(const std::string& path, uint64_t events, unsigned unused) {
+  (void)unused;
+  XCDFFile f(path.c_str(), "r");
+
+  XCDFUnsignedIntegerField nHit = f.GetUnsignedIntegerField("event.nHit");
+  XCDFUnsignedIntegerField nChAvail = f.GetUnsignedIntegerField("rec.nChAvail");
+  XCDFUnsignedIntegerField nHitSP20 = f.GetUnsignedIntegerField("rec.nHitSP20");
+  XCDFFloatingPointField zenith = f.GetFloatingPointField("rec.zenithAngle");
+  XCDFFloatingPointField azimuth = f.GetFloatingPointField("rec.azimuthAngle");
+  XCDFFloatingPointField coreX = f.GetFloatingPointField("rec.coreX");
+  XCDFFloatingPointField coreY = f.GetFloatingPointField("rec.coreY");
+  XCDFFloatingPointField logEnergy = f.GetFloatingPointField("mc.logEnergy");
+  XCDFFloatingPointField eventWeight = f.GetFloatingPointField("mc.eventWeight");
+
+  uint64_t checksum = 0;
+  for (uint64_t i = 0; i < events; ++i) {
+    if (!f.Read()) {
+      XCDFFatal("Unexpected EOF in HAWC MC scalar fixture read");
+    }
+    checksum = Mix(checksum, *nHit);
+    checksum = Mix(checksum, *nChAvail);
+    checksum = Mix(checksum, *nHitSP20);
+    checksum = Mix(checksum, DoubleBits(*zenith));
+    checksum = Mix(checksum, DoubleBits(*azimuth));
+    checksum = Mix(checksum, DoubleBits(*coreX));
+    checksum = Mix(checksum, DoubleBits(*coreY));
+    checksum = Mix(checksum, DoubleBits(*logEnergy));
+    checksum = Mix(checksum, DoubleBits(*eventWeight));
+  }
+  f.Close();
+  return checksum;
+}
+
+uint64_t HawcMcSeek(const std::string& path, uint64_t events, unsigned count) {
+  if (count == 0 || events == 0) {
+    return 0;
+  }
+  XCDFFile f(path.c_str(), "r");
+  uint64_t available = f.GetEventCount();
+  uint64_t limit = std::min<uint64_t>(events, available);
+  uint64_t nSeek = SeekOperationCount(limit, count);
+  XCDFUnsignedIntegerField nHit = f.GetUnsignedIntegerField("event.nHit");
+  XCDFFloatingPointField zenith = f.GetFloatingPointField("rec.zenithAngle");
+  std::vector<uint64_t> positions = SeekPositions(limit, static_cast<unsigned>(nSeek));
+
+  uint64_t checksum = 0;
+  for (std::vector<uint64_t>::const_iterator it = positions.begin(); it != positions.end(); ++it) {
+    if (!f.Seek(*it)) {
+      XCDFFatal("Seek failed in HAWC MC fixture");
+    }
+    checksum = Mix(checksum, *nHit);
+    checksum = Mix(checksum, DoubleBits(*zenith));
+  }
+  f.Close();
+  return checksum;
+}
+
+uint64_t HawcMcEventCount(const std::string& path, uint64_t events, unsigned unused) {
+  (void)events;
+  (void)unused;
+  XCDFFile f(path.c_str(), "r");
+  uint64_t count = f.GetEventCount();
+  f.Close();
+  return Mix(0, count);
+}
+
+uint64_t HawcMcGlobalRanges(const std::string& path, uint64_t events, unsigned unused) {
+  (void)events;
+  (void)unused;
+  XCDFFile f(path.c_str(), "r");
+  uint64_t checksum = 0;
+  std::pair<uint64_t, uint64_t> nHitRange = f.GetUnsignedIntegerFieldRange("event.nHit");
+  std::pair<uint64_t, uint64_t> gridRange = f.GetUnsignedIntegerFieldRange("event.hit.gridId");
+  std::pair<double, double> chargeRange = f.GetFloatingPointFieldRange("event.hit.charge");
+  std::pair<double, double> zenithRange = f.GetFloatingPointFieldRange("rec.zenithAngle");
+  std::pair<double, double> energyRange = f.GetFloatingPointFieldRange("mc.logEnergy");
+  checksum = Mix(checksum, nHitRange.first);
+  checksum = Mix(checksum, nHitRange.second);
+  checksum = Mix(checksum, gridRange.first);
+  checksum = Mix(checksum, gridRange.second);
+  checksum = Mix(checksum, DoubleBits(chargeRange.first));
+  checksum = Mix(checksum, DoubleBits(chargeRange.second));
+  checksum = Mix(checksum, DoubleBits(zenithRange.first));
+  checksum = Mix(checksum, DoubleBits(zenithRange.second));
+  checksum = Mix(checksum, DoubleBits(energyRange.first));
+  checksum = Mix(checksum, DoubleBits(energyRange.second));
   f.Close();
   return checksum;
 }
@@ -605,9 +841,21 @@ std::vector<Scenario> FeatureScenarios() {
       std::vector<Operation>{
           Operation("read_full", HawcTrigReadFull, HawcTrigCount),
           Operation("read_scalars", HawcTrigReadScalars, HawcTrigCount),
+          Operation("read_nhit_filtered", HawcTrigReadNHitFiltered, HawcTrigCount),
+          Operation("read_nhit_lazy", HawcTrigReadNHitLazy, HawcTrigCount),
           Operation("seek", HawcTrigSeek, SeekOperationCount),
           Operation("event_count", HawcTrigEventCount, CountOne),
           Operation("global_ranges", HawcTrigGlobalRanges, CountOne)},
+      true});
+  scenarios.push_back(Scenario{"hawc_mc_fixture",
+      "Existing HAWC MC reconstruction XCDF fixture supplied with --fixture",
+      FixtureNoWrite,
+      std::vector<Operation>{
+          Operation("read_full", HawcMcReadFull, HawcMcCount),
+          Operation("read_scalars", HawcMcReadScalars, HawcMcCount),
+          Operation("seek", HawcMcSeek, SeekOperationCount),
+          Operation("event_count", HawcMcEventCount, CountOne),
+          Operation("global_ranges", HawcMcGlobalRanges, CountOne)},
       true});
   return scenarios;
 }

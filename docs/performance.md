@@ -22,6 +22,61 @@ nix develop --command cmake -S . -B build-nix -DBUILD_PYTHON=OFF -DCMAKE_BUILD_T
 nix develop --command cmake --build build-nix
 ```
 
+The flake also exposes zlib-ng zlib-compatible apps for backend experiments:
+
+```sh
+nix run .#test-zlib-ng
+nix run .#perf-zlib-ng -- [xcdf-perf-test args]
+```
+
+These build in `build-nix-zlib-ng` by default.  When running multiple zlib-ng
+benchmarks concurrently, set a distinct `XCDF_BUILD_DIR` for each process so
+Ninja does not share a build directory:
+
+```sh
+XCDF_BUILD_DIR=/tmp/xcdf-build-zlib-ng-a nix run .#perf-zlib-ng -- [args]
+XCDF_BUILD_DIR=/tmp/xcdf-build-zlib-ng-b nix run .#perf-zlib-ng -- [args]
+```
+
+The zlib-ng backend passes the CTest suite after fixing append-mode truncation
+of rewritten files.
+
+Sequential disk-file reads prefetch the next block by default when the previous
+compressed block-data frame is at least 128 KiB.  For A/B benchmarking or
+debugging, disable that with:
+
+```sh
+XCDF_DISABLE_PREFETCH=1 nix run .#perf -- [xcdf-perf-test args]
+```
+
+Selected reads are available for workflows that inspect a small set of fields
+before deciding whether to materialize the full event:
+
+```cpp
+std::vector<std::string> names;
+names.push_back("trig.eventID");
+names.push_back("trig.nHit4Edge");
+names.push_back("trig.nHit2Edge");
+XCDFFile::ReadSelector selector = file.MakeReadSelector(names);
+
+while (file.Read(selector)) {
+  if (*nHit4Edge + *nHit2Edge >= 200) {
+    file.ReloadCurrentEvent();
+    // Full event fields are now available.
+  }
+}
+```
+
+The selected-read path intentionally loads blocks synchronously.  The ordinary
+`Read()` path keeps async prefetch enabled, but selected reads do less current
+event work and measured better without a competing background inflate thread.
+For HDD-backed scans where I/O overlap is more important, selected reads can
+also opt into prefetch:
+
+```sh
+XCDF_PREFETCH_SELECTED_READS=1 nix run .#perf -- [xcdf-perf-test args]
+```
+
 ## Run the benchmark suite
 
 ```sh
@@ -51,6 +106,32 @@ nix develop --command ./build-nix/xcdf-perf-test \
 
 For the full local file, pass it directly as `--fixture` and set `--events` to
 how many leading events you want each measured read operation to consume.
+The fixture read operations consume the requested prefix directly; pass an event
+count that is within the file to avoid EOF failures.
+
+## Real HAWC MC reconstruction fixture
+
+Top-level MC reconstruction outputs under `/store/hawc/mc` are useful real-data
+fixtures.  Because `/store` may be HDD-backed, copy the chosen file into ignored
+local storage for CPU/decode-focused iteration:
+
+```sh
+cp /store/hawc/mc/gamma.xcdf perf-fixtures/hawc_mc_gamma.xcdf
+
+nix develop --command ./build-nix/xcdf-perf-test \
+  --scenario hawc_mc_fixture \
+  --fixture perf-fixtures/hawc_mc_gamma.xcdf \
+  --events 250000 \
+  --repetitions 3 \
+  --seek-count 5000 \
+  --csv
+```
+
+The larger uncut reconstruction output
+`/store/hawc/mc/gamma_nocuts_aligned.xcdf` is a good final validation fixture,
+but it is large enough that smaller local MC files are better for iteration.  Run
+bounded-prefix checks directly against `/store` when validating end-to-end HDD
+serial-read behavior.
 
 ## Core data-shape scenarios
 
@@ -77,7 +158,13 @@ how many leading events you want each measured read operation to consume.
 - `istream_read`: user-supplied `std::istream` reads vs XCDF-owned file streams.
 - `hawc_trig_fixture`: existing real HAWC trigger file or slice supplied with
   `--fixture`; measures full vector-heavy reads, scalar-only reads, seeks, event
-  count, and global range metadata.
+  count, global range metadata, and a hit-multiplicity-filtered read shape that
+  checks trigger hit counts before touching full hit vectors for large events.
+  It includes both ordinary filtered reads and selected-read/reload filtered
+  reads.
+- `hawc_mc_fixture`: existing real HAWC MC reconstruction file supplied with
+  `--fixture`; measures representative reco/MC scalar fields, vector hit fields,
+  seeks, event count, and global range metadata.
 
 Each scenario reports `write` plus one or more read-side operations. Output
 columns include elapsed seconds, events/s, MiB/s based on the final XCDF file

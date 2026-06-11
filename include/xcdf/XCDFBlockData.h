@@ -40,6 +40,13 @@ class XCDFBlockData {
 
   public:
 
+    struct Position {
+      Position() : index(0), indexBits(0) { }
+      Position(unsigned i, unsigned bits) : index(i), indexBits(bits) { }
+      unsigned index;
+      unsigned indexBits;
+    };
+
     XCDFBlockData() {
 
       // Check machine endianness
@@ -83,6 +90,15 @@ class XCDFBlockData {
     void Clear() {buffer_.Clear();}
 
     void Shrink() {buffer_.Shrink();}
+
+    Position GetPosition() const {
+      return Position(buffer_.index_, buffer_.indexBits_);
+    }
+
+    void SetPosition(const Position& position) {
+      buffer_.index_ = position.index;
+      buffer_.indexBits_ = position.indexBits;
+    }
 
     void UnpackFrame(const XCDFFrame& frame) {
 

@@ -10,7 +10,9 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        commonPackages = with pkgs; [
+        defaultZlib = pkgs.zlib;
+        zlibNgCompat = pkgs.zlib-ng.override { withZlibCompat = true; };
+        commonPackagesFor = zlibProvider: with pkgs; [
           cmake
           gcc
           git
@@ -19,16 +21,16 @@
           ninja
           pkg-config
           python3
-          zlib
+          zlibProvider
         ];
-        setupBuildEnv = ''
-          export CPATH="${pkgs.zlib.dev}/include''${CPATH:+:$CPATH}"
-          export LIBRARY_PATH="${pkgs.zlib}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
-          export LD_LIBRARY_PATH="${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        setupBuildEnvFor = zlibProvider: ''
+          export CPATH="${zlibProvider.dev}/include''${CPATH:+:$CPATH}"
+          export LIBRARY_PATH="${zlibProvider}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${zlibProvider}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         '';
-        configureAndBuild = ''
-          ${setupBuildEnv}
-          build_dir=''${XCDF_BUILD_DIR:-build-nix}
+        configureAndBuildFor = zlibProvider: defaultBuildDir: ''
+          ${setupBuildEnvFor zlibProvider}
+          build_dir=''${XCDF_BUILD_DIR:-${defaultBuildDir}}
           build_type=''${CMAKE_BUILD_TYPE:-Release}
           cmake -S . -B "$build_dir" \
             -DBUILD_PYTHON=OFF \
@@ -36,42 +38,57 @@
             -G Ninja >&2
           cmake --build "$build_dir" >&2
         '';
-        mkApp = name: text: {
+        buildAppTextFor = zlibProvider: defaultBuildDir: ''
+          ${setupBuildEnvFor zlibProvider}
+          build_dir=''${XCDF_BUILD_DIR:-${defaultBuildDir}}
+          build_type=''${CMAKE_BUILD_TYPE:-Release}
+          cmake -S . -B "$build_dir" \
+            -DBUILD_PYTHON=OFF \
+            -DCMAKE_BUILD_TYPE="$build_type" \
+            -G Ninja \
+            "$@"
+          cmake --build "$build_dir"
+        '';
+        mkAppFor = zlibProvider: name: text: {
           type = "app";
           program = "${pkgs.writeShellApplication {
             inherit name;
-            runtimeInputs = commonPackages;
+            runtimeInputs = commonPackagesFor zlibProvider;
             inherit text;
           }}/bin/${name}";
         };
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = commonPackages;
+          packages = commonPackagesFor defaultZlib;
         };
 
         apps = rec {
           default = test;
 
-          build = mkApp "xcdf-build" ''
-            ${setupBuildEnv}
-            build_dir=''${XCDF_BUILD_DIR:-build-nix}
-            build_type=''${CMAKE_BUILD_TYPE:-Release}
-            cmake -S . -B "$build_dir" \
-              -DBUILD_PYTHON=OFF \
-              -DCMAKE_BUILD_TYPE="$build_type" \
-              -G Ninja \
-              "$@"
-            cmake --build "$build_dir"
-          '';
+          build = mkAppFor defaultZlib "xcdf-build"
+            (buildAppTextFor defaultZlib "build-nix");
 
-          test = mkApp "xcdf-test" ''
-            ${configureAndBuild}
+          test = mkAppFor defaultZlib "xcdf-test" ''
+            ${configureAndBuildFor defaultZlib "build-nix"}
             ctest --test-dir "$build_dir" --output-on-failure "$@"
           '';
 
-          perf = mkApp "xcdf-perf" ''
-            ${configureAndBuild}
+          perf = mkAppFor defaultZlib "xcdf-perf" ''
+            ${configureAndBuildFor defaultZlib "build-nix"}
+            "$build_dir"/xcdf-perf-test "$@"
+          '';
+
+          build-zlib-ng = mkAppFor zlibNgCompat "xcdf-build-zlib-ng"
+            (buildAppTextFor zlibNgCompat "build-nix-zlib-ng");
+
+          test-zlib-ng = mkAppFor zlibNgCompat "xcdf-test-zlib-ng" ''
+            ${configureAndBuildFor zlibNgCompat "build-nix-zlib-ng"}
+            ctest --test-dir "$build_dir" --output-on-failure "$@"
+          '';
+
+          perf-zlib-ng = mkAppFor zlibNgCompat "xcdf-perf-zlib-ng" ''
+            ${configureAndBuildFor zlibNgCompat "build-nix-zlib-ng"}
             "$build_dir"/xcdf-perf-test "$@"
           '';
         };

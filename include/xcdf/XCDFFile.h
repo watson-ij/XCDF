@@ -53,6 +53,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <istream>
 #include <cassert>
 #include <cctype>
+#include <future>
+#include <memory>
 
 /*!
  * @class XCDFFile
@@ -96,6 +98,20 @@ class XCDFFile {
       // Close-on-destruction behavior prevents assignment/copy construction
       Close();
     }
+
+    class ReadSelector {
+      public:
+        ReadSelector() : owner_(NULL) { }
+
+      private:
+        friend class XCDFFile;
+        ReadSelector(const XCDFFile* owner,
+                     const std::vector<char>& selectedFields) :
+          owner_(owner),
+          selectedFields_(selectedFields) { }
+        const XCDFFile* owner_;
+        std::vector<char> selectedFields_;
+    };
 
     /*
      *  Open a file on-disk in the given mode
@@ -157,6 +173,12 @@ class XCDFFile {
      *   0 if no further events can be read successfully
      */
     int Read();
+
+    ReadSelector MakeReadSelector(const std::vector<std::string>& fieldNames) const;
+
+    int Read(const ReadSelector& selector);
+
+    void ReloadCurrentEvent();
 
     /// Seek to the given event in the file by absolute position
     bool Seek(uint64_t absoluteEventPos);
@@ -605,6 +627,22 @@ class XCDFFile {
 
   private:
 
+    struct PrefetchResult {
+      PrefetchResult() : haveSecondFrame(false),
+                         firstFrameStartOffset(0),
+                         firstFrameEndOffset(0),
+                         secondFrameStartOffset(0),
+                         secondFrameEndOffset(0) { }
+
+      XCDFFrame firstFrame;
+      XCDFFrame secondFrame;
+      bool haveSecondFrame;
+      std::streampos firstFrameStartOffset;
+      std::streampos firstFrameEndOffset;
+      std::streampos secondFrameStartOffset;
+      std::streampos secondFrameEndOffset;
+    };
+
     // Keep a vector of XCDFFieldData objects.  List order is read/write
     // order, so it must be preserved.
     typedef std::vector<XCDFFieldDataBasePtr> FieldList;
@@ -631,6 +669,11 @@ class XCDFFile {
     bool isOpen_;
     bool isAppend_;
     bool recover_;
+    bool prefetchEnabled_;
+    bool prefetchReadAllowed_;
+    bool prefetchSizeAllowed_;
+    bool prefetchSelectedReads_;
+    bool currentEventReloadable_;
     std::string currentFileName_;
     bool isSimple_;
 
@@ -643,6 +686,7 @@ class XCDFFile {
     std::streampos currentFileStartOffset_;
     std::streampos currentFrameStartOffset_;
     std::streampos currentFrameEndOffset_;
+    XCDFBlockData::Position currentEventStartPosition_;
 
     // Frame object pool.  Allocate only one copy for efficiency.
     XCDFFileHeader  fileHeader_;
@@ -652,13 +696,28 @@ class XCDFFile {
 
     // I/O streams
     XCDFStreamHandler streamHandler_;
+    std::shared_ptr<std::future<PrefetchResult> > prefetchFuture_;
 
     void Init();
     void WriteFrame();
     void ReadFrame();
+    static void ReadFrameFromStream(std::istream& istream,
+                                    XCDFFrame& frame,
+                                    std::streampos& startOffset,
+                                    std::streampos& endOffset);
+    void ReadFrameInto(XCDFFrame& frame,
+                       std::streampos& startOffset,
+                       std::streampos& endOffset);
+    static PrefetchResult ReadPrefetchFrameGroup(const std::string& fileName,
+                                                 std::streampos startOffset);
+    void MaybeStartPrefetch();
+    bool TakePrefetch(PrefetchResult& result);
+    void StopPrefetch();
     void WriteBlock();
     void WriteEvent();
     void ReadEvent();
+    void ReadSelectedEvent(const ReadSelector& selector);
+    void LoadEventWithoutAdvancingCounters();
     void SkipEvent();
     bool ReadNextBlock();
     bool GetNextBlockWithEvents();

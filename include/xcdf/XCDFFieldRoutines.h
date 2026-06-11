@@ -32,6 +32,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 void ShrinkField(XCDFFieldDataBase& base) {base.Shrink();}
 void ResetField(XCDFFieldDataBase& base) {base.Reset();}
+void ClearField(XCDFFieldDataBase& base) {base.Clear();}
 void ZeroAlignField(XCDFFieldDataBase& base) {base.ZeroAlign();}
 void StashField(XCDFFieldDataBase& base) {base.Stash();}
 void UnstashField(XCDFFieldDataBase& base) {base.Unstash();}

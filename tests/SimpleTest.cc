@@ -26,6 +26,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <xcdf/XCDF.h>
 
+#include <cmath>
 #include <cstdio>
 #include <limits>
 
@@ -190,6 +191,42 @@ int main(int argc, char** argv) {
   }
 
   std::cout << f.Read() << std::endl;
+  f.Close();
+
+  f.Open("test.xcd", "r");
+  field1 = f.GetUnsignedIntegerField("field1");
+  field2 = f.GetUnsignedIntegerField("field2");
+  field3 = f.GetFloatingPointField("field3");
+  field6 = f.GetUnsignedIntegerField("field6");
+  field8 = f.GetUnsignedIntegerField("field8");
+  field9 = f.GetFloatingPointField("field9");
+
+  std::vector<std::string> selectedNames;
+  selectedNames.push_back("field1");
+  selectedNames.push_back("field3");
+  XCDFFile::ReadSelector selector = f.MakeReadSelector(selectedNames);
+
+  if (!f.Read(selector)) {
+    XCDFFatal("Selected read failed");
+  }
+  if (*field1 != 2 || std::abs(*field3 - 0.1) > 1e-9 ||
+      field6.GetSize() != 0) {
+    XCDFFatal("Selected read loaded unexpected values");
+  }
+
+  f.ReloadCurrentEvent();
+  if (field2.GetSize() != 2 || field8.GetSize() != 2 ||
+      field9.GetSize() != 3 || field6.GetSize() != 1) {
+    XCDFFatal("ReloadCurrentEvent did not reload the full event");
+  }
+
+  if (!f.Read(selector)) {
+    XCDFFatal("Second selected read failed");
+  }
+  if (*field1 != 2 || std::abs(*field3 - 0.3) > 1e-9 ||
+      field6.GetSize() != 0 || field9.GetSize() != 0) {
+    XCDFFatal("Second selected read loaded unexpected values");
+  }
   f.Close();
 
   return 0;

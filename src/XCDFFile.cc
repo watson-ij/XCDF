@@ -32,8 +32,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cstring>
 #include <fstream>
 #include <algorithm>
+#include <cstdlib>
+#include <unistd.h>
 
 namespace {
+const uint32_t PREFETCH_MIN_BLOCK_DATA_BYTES = 128 * 1024;
+
 void EnableActiveMaxTracking(XCDFFieldDataBase& base) {
   base.SetTrackActiveMax(true);
 }
@@ -59,12 +63,18 @@ void XCDFFile::Init() {
   isOpen_ = false;
   isAppend_ = false;
   recover_ = false;
+  prefetchEnabled_ = false;
+  prefetchReadAllowed_ = false;
+  prefetchSizeAllowed_ = false;
+  prefetchSelectedReads_ = false;
+  currentEventReloadable_ = false;
   unusableGlobalsFromFile_ = false;
   haveV3Globals_ = false;
 
   currentFileStartOffset_ = 0;
   currentFrameStartOffset_ = 0;
   currentFrameEndOffset_ = 0;
+  currentEventStartPosition_ = XCDFBlockData::Position();
 
   currentFileName_ = "";
   isSimple_ = false;
@@ -76,6 +86,8 @@ void XCDFFile::Init() {
  *  written out to file.
  */
 void XCDFFile::Close() {
+
+  StopPrefetch();
 
   if (IsWritable()) {
 
@@ -116,6 +128,7 @@ void XCDFFile::Close() {
     fileTrailer_.SetTotalEventCount(eventCount_);
     fileTrailer_.PackFrame(currentFrame_);
     WriteFrame();
+    uint64_t finalEndPos = static_cast<uint64_t>(ostream.tellp());
 
     // Update header entry with block table pointer if possible.
     // Don't want to throw an exception here if operation is not allowed.
@@ -132,6 +145,13 @@ void XCDFFile::Close() {
     }
 
     ostream.flush();
+    if (isAppend_ && !currentFileName_.empty()) {
+      if (truncate(currentFileName_.c_str(),
+                   static_cast<off_t>(finalEndPos)) != 0) {
+        XCDFFatal("Unable to truncate appended file at byte offset: "
+                  << finalEndPos);
+      }
+    }
   }
 
   streamHandler_.Close();
@@ -146,10 +166,17 @@ void XCDFFile::Close() {
   blockTableComplete_ = false;
   headerWritten_ = false;
   isOpen_ = false;
+  isAppend_ = false;
+  prefetchEnabled_ = false;
+  prefetchReadAllowed_ = false;
+  prefetchSizeAllowed_ = false;
+  prefetchSelectedReads_ = false;
+  currentEventReloadable_ = false;
 
   currentFileStartOffset_ = 0;
   currentFrameStartOffset_ = 0;
   currentFrameEndOffset_ = 0;
+  currentEventStartPosition_ = XCDFBlockData::Position();
 
   currentFileName_ = "";
 }
@@ -235,6 +262,10 @@ bool XCDFFile::Open(const char* fileName,
   }
 
   currentFileName_ = std::string(fileName);
+  prefetchEnabled_ = isOpen_ && isRead && !recover_ && !isAppend_ &&
+                     std::getenv("XCDF_DISABLE_PREFETCH") == NULL;
+  prefetchSelectedReads_ =
+      std::getenv("XCDF_PREFETCH_SELECTED_READS") != NULL;
   return isOpen_;
 }
 
@@ -372,23 +403,110 @@ void XCDFFile::WriteFrame() {
  */
 void XCDFFile::ReadFrame() {
 
+  ReadFrameInto(currentFrame_, currentFrameStartOffset_, currentFrameEndOffset_);
+}
+
+void XCDFFile::ReadFrameInto(XCDFFrame& frame,
+                             std::streampos& startOffset,
+                             std::streampos& endOffset) {
+
   assert(IsReadable());
 
-  std::istream& istream = streamHandler_.GetInputStream();
+  ReadFrameFromStream(streamHandler_.GetInputStream(),
+                      frame,
+                      startOffset,
+                      endOffset);
+}
+
+void XCDFFile::ReadFrameFromStream(std::istream& istream,
+                                   XCDFFrame& frame,
+                                   std::streampos& startOffset,
+                                   std::streampos& endOffset) {
 
   // Save start-of-frame file pointer
-  currentFrameStartOffset_ = istream.tellg();
+  startOffset = istream.tellg();
   try {
-    currentFrame_.Read(istream);
+    frame.Read(istream);
   } catch (std::istream::failure& e) {
     istream.setstate(std::istream::failbit);
   }
 
   // Save end-of-frame file pointer
-  currentFrameEndOffset_ = istream.tellg();
+  endOffset = istream.tellg();
 
   if (istream.fail()) {
-    XCDFFatal("Read failed.  Byte offset: " << currentFrameStartOffset_);
+    XCDFFatal("Read failed.  Byte offset: " << startOffset);
+  }
+}
+
+XCDFFile::PrefetchResult
+XCDFFile::ReadPrefetchFrameGroup(const std::string& fileName,
+                                 std::streampos startOffset) {
+
+  PrefetchResult result;
+  std::ifstream istream(fileName.c_str(), std::ifstream::in |
+                                        std::ifstream::binary);
+  if (!istream.good()) {
+    XCDFFatal("Unable to open " << fileName << " for background prefetch");
+  }
+  try {
+    istream.seekg(startOffset);
+  } catch (std::istream::failure& e) {
+    istream.setstate(std::istream::failbit);
+  }
+  if (istream.fail() || istream.tellg() != startOffset) {
+    XCDFFatal("Unable to seek to background prefetch byte offset: "
+              << startOffset);
+  }
+
+  ReadFrameFromStream(istream,
+                      result.firstFrame,
+                      result.firstFrameStartOffset,
+                      result.firstFrameEndOffset);
+  if (result.firstFrame.GetType() == XCDF_BLOCK_HEADER) {
+    ReadFrameFromStream(istream,
+                        result.secondFrame,
+                        result.secondFrameStartOffset,
+                        result.secondFrameEndOffset);
+    result.haveSecondFrame = true;
+  }
+  return result;
+}
+
+void XCDFFile::MaybeStartPrefetch() {
+
+  if (!prefetchEnabled_ || !prefetchReadAllowed_ || !prefetchSizeAllowed_ ||
+      isAppend_ || !IsReadable() || prefetchFuture_) {
+    return;
+  }
+
+  std::streampos startOffset = streamHandler_.GetInputStream().tellg();
+  if (streamHandler_.GetInputStream().fail()) {
+    return;
+  }
+  std::string fileName = currentFileName_;
+  prefetchFuture_.reset(new std::future<PrefetchResult>(
+      std::async(std::launch::async, [fileName, startOffset]() {
+        return ReadPrefetchFrameGroup(fileName, startOffset);
+      })));
+}
+
+bool XCDFFile::TakePrefetch(PrefetchResult& result) {
+
+  if (!prefetchFuture_) {
+    return false;
+  }
+
+  result = prefetchFuture_->get();
+  prefetchFuture_.reset();
+  return true;
+}
+
+void XCDFFile::StopPrefetch() {
+
+  if (prefetchFuture_) {
+    prefetchFuture_->get();
+    prefetchFuture_.reset();
   }
 }
 
@@ -523,12 +641,39 @@ void XCDFFile::ReadEvent() {
 
   assert(blockEventCount_ > 0);
 
+  currentEventReloadable_ = false;
+  LoadEventWithoutAdvancingCounters();
+
+  blockEventCount_--;
+  eventCount_++;
+}
+
+void XCDFFile::LoadEventWithoutAdvancingCounters() {
+
   // Read in event from the compressed buffer
   for (FieldList::iterator it = fieldList_.begin();
                            it != fieldList_.end(); ++it) {
     (*it)->Load(blockData_);
   }
+}
 
+void XCDFFile::ReadSelectedEvent(const ReadSelector& selector) {
+
+  assert(blockEventCount_ > 0);
+
+  if (selector.selectedFields_.size() != fieldList_.size()) {
+    XCDFFatal("Read selector does not match this XCDFFile");
+  }
+
+  currentEventStartPosition_ = blockData_.GetPosition();
+  for (uint32_t i = 0; i < fieldList_.size(); ++i) {
+    if (selector.selectedFields_[i]) {
+      fieldList_[i]->Load(blockData_);
+    } else {
+      fieldList_[i]->Skip(blockData_);
+    }
+  }
+  currentEventReloadable_ = true;
   blockEventCount_--;
   eventCount_++;
 }
@@ -536,6 +681,8 @@ void XCDFFile::ReadEvent() {
 void XCDFFile::SkipEvent() {
 
   assert(blockEventCount_ > 0);
+
+  currentEventReloadable_ = false;
 
   // Advance through one event. Decode only fields needed as vector parents;
   // other fields can be skipped at the bit level.
@@ -551,12 +698,21 @@ void XCDFFile::SkipEvent() {
 bool XCDFFile::ReadNextBlock() {
 
   assert(IsReadable());
+  currentEventReloadable_ = false;
 
   if (streamHandler_.GetInputStream().fail()) {
     return false;
   }
 
-  ReadFrame();
+  PrefetchResult prefetched;
+  bool havePrefetched = TakePrefetch(prefetched);
+  if (havePrefetched) {
+    currentFrame_ = prefetched.firstFrame;
+    currentFrameStartOffset_ = prefetched.firstFrameStartOffset;
+    currentFrameEndOffset_ = prefetched.firstFrameEndOffset;
+  } else {
+    ReadFrame();
+  }
 
   if (currentFrame_.GetType() == XCDF_FILE_HEADER) {
     XCDFFatal("Corrupt file: Extraneous file header found at offset: " <<
@@ -591,12 +747,24 @@ bool XCDFFile::ReadNextBlock() {
     // Get event count for next block
     blockEventCount_ = blockHeader_.GetEventCount();
 
-    ReadFrame();
+    if (havePrefetched && prefetched.haveSecondFrame) {
+      currentFrame_ = prefetched.secondFrame;
+      currentFrameStartOffset_ = prefetched.secondFrameStartOffset;
+      currentFrameEndOffset_ = prefetched.secondFrameEndOffset;
+      if (!DoSeek(prefetched.secondFrameEndOffset)) {
+        XCDFFatal("Unable to advance input stream after prefetched block data "
+                  "at byte offset: " << prefetched.secondFrameEndOffset);
+      }
+    } else {
+      ReadFrame();
+    }
 
     if (currentFrame_.GetType() != XCDF_BLOCK_DATA) {
       XCDFFatal("Block header not followed by data block at file offset: " <<
                                    currentFrameStartOffset_ << ". Aborting.");
     }
+    prefetchSizeAllowed_ =
+        currentFrame_.GetDataSize() >= PREFETCH_MIN_BLOCK_DATA_BYTES;
 
     // Shrink internal buffers if previous block > 150 MB
     if (blockData_.Capacity() > 150000000) {
@@ -613,9 +781,17 @@ bool XCDFFile::ReadNextBlock() {
       blockData_.UnpackFrame(currentFrame_);
     }
     blockCount_++;
+    MaybeStartPrefetch();
     return true;
 
   } else if (currentFrame_.GetType() == XCDF_FILE_TRAILER) {
+
+    if (havePrefetched) {
+      if (!DoSeek(prefetched.firstFrameEndOffset)) {
+        XCDFFatal("Unable to advance input stream after prefetched trailer "
+                  "at byte offset: " << prefetched.firstFrameEndOffset);
+      }
+    }
 
     // Load the trailer if not already loaded
     if (!blockTableComplete_) {
@@ -688,6 +864,19 @@ bool XCDFFile::GetNextBlockWithEvents() {
   return false;
 }
 
+XCDFFile::ReadSelector
+XCDFFile::MakeReadSelector(const std::vector<std::string>& fieldNames) const {
+
+  std::vector<char> selectedFields(fieldList_.size(), 0);
+  for (std::vector<std::string>::const_iterator name = fieldNames.begin();
+                                               name != fieldNames.end();
+                                               ++name) {
+    FieldList::const_iterator field = FindFieldByName(*name, true);
+    selectedFields[field - fieldList_.begin()] = 1;
+  }
+  return ReadSelector(this, selectedFields);
+}
+
 /*
  * Read the next event into the field buffers
  */
@@ -701,7 +890,11 @@ int XCDFFile::Read() {
   if (blockEventCount_ == 0) {
 
     // No events in current block.  Get the next block with data
-    if (!GetNextBlockWithEvents()) {
+    bool oldPrefetchReadAllowed = prefetchReadAllowed_;
+    prefetchReadAllowed_ = true;
+    bool gotBlock = GetNextBlockWithEvents();
+    prefetchReadAllowed_ = oldPrefetchReadAllowed;
+    if (!gotBlock) {
 
       // No more events
       return 0;
@@ -712,6 +905,46 @@ int XCDFFile::Read() {
   return 1;
 }
 
+int XCDFFile::Read(const ReadSelector& selector) {
+
+  // Check that stream is ready and opened for reading
+  if (!IsReadable()) {
+    XCDFFatal("XCDF Read Failed: File not opened for reading");
+  }
+  if (selector.owner_ != this) {
+    XCDFFatal("XCDF Read Failed: Read selector belongs to a different file");
+  }
+
+  if (blockEventCount_ == 0) {
+
+    // No events in current block.  Get the next block with data
+    bool oldPrefetchReadAllowed = prefetchReadAllowed_;
+    prefetchReadAllowed_ = prefetchSelectedReads_;
+    bool gotBlock = GetNextBlockWithEvents();
+    prefetchReadAllowed_ = oldPrefetchReadAllowed;
+    if (!gotBlock) {
+
+      // No more events
+      return 0;
+    }
+  }
+
+  ReadSelectedEvent(selector);
+  return 1;
+}
+
+void XCDFFile::ReloadCurrentEvent() {
+
+  if (!currentEventReloadable_) {
+    XCDFFatal("No selected-read event is available for reload");
+  }
+
+  FieldListForEach(ClearField);
+  blockData_.SetPosition(currentEventStartPosition_);
+  LoadEventWithoutAdvancingCounters();
+  currentEventReloadable_ = false;
+}
+
 /*
  *  Seek the istream to a new file position and check for failure.
  *  Return the status.
@@ -719,6 +952,9 @@ int XCDFFile::Read() {
 bool XCDFFile::DoSeek(const std::streampos& pos) {
 
   assert(IsReadable());
+
+  StopPrefetch();
+  currentEventReloadable_ = false;
 
   std::istream& istream = streamHandler_.GetInputStream();
 
