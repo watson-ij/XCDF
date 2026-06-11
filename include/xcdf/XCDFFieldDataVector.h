@@ -76,9 +76,10 @@ class XCDFFieldDataVector : public XCDFFieldData<T> {
           data_.Push(XCDFFieldData<T>::LoadValue(data));
         }
       } else {
-        for (unsigned i = 0; i < cnt; ++i) {
-          XCDFFieldData<T>::SkipValue(data);
-        }
+        uint64_t totalBits =
+            static_cast<uint64_t>(XCDFFieldData<T>::GetActiveSize()) * cnt;
+        data.SkipDatum(totalBits);
+        this->bitsProcessed_ += totalBits;
       }
     }
     virtual void Dump(XCDFBlockData& data) {

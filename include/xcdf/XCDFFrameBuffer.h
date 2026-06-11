@@ -31,6 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <xcdf/XCDFDeflate.h>
 
 #include <vector>
+#include <cstring>
 #include <stdint.h>
 
 /*!
@@ -44,7 +45,7 @@ class XCDFFrameBuffer {
 
   public:
 
-    XCDFFrameBuffer() : readIndex_(0) { }
+    XCDFFrameBuffer() : readIndex_(0), size_(0) { }
     ~XCDFFrameBuffer() { }
 
     uint8_t* GetBuffer() {
@@ -52,6 +53,17 @@ class XCDFFrameBuffer {
         XCDFFatal("Getting data from an unallocated buffer");
       }
       return &(data_.front());
+    }
+
+    const uint8_t* GetBuffer() const {
+      if (GetSize() == 0) {
+        XCDFFatal("Getting data from an unallocated buffer");
+      }
+      return &(data_.front());
+    }
+
+    const uint8_t* GetDataPointer() const {
+      return GetSize() == 0 ? NULL : &(data_.front());
     }
 
     const uint8_t* Get(uint32_t size) {
@@ -64,46 +76,73 @@ class XCDFFrameBuffer {
     }
 
     void Insert(const uint32_t size, const uint8_t* data) {
-      data_.insert(data_.end(), data, data + size);
+      if (size == 0) {
+        return;
+      }
+      uint32_t oldSize = size_;
+      if (data_.size() < oldSize + size) {
+        data_.resize(oldSize + size);
+      }
+      std::memcpy(&data_[oldSize], data, size);
+      size_ += size;
     }
 
     void Clear() {
-      data_.clear();
+      size_ = 0;
       readIndex_ = 0;
     }
 
     void Deflate() {
+      data_.resize(size_);
       std::vector<uint8_t> deflated;
       DeflateVector(data_, deflated);
       data_.swap(deflated);
+      size_ = data_.size();
       readIndex_ = 0;
     }
 
     void Inflate() {
       std::vector<uint8_t> inflated;
+      // Reuse the previous inflated capacity.  The compressed payload was just
+      // read into data_, whose capacity is usually still sized for the last
+      // inflated block.
+      inflated.reserve(data_.capacity());
+      data_.resize(size_);
       InflateVector(data_, inflated);
       data_.swap(inflated);
+      size_ = data_.size();
+      data_.resize(size_ + 8);
       readIndex_ = 0;
     }
 
-    uint32_t CalculateChecksum() {
+    uint32_t CalculateChecksum() const {
 
       uint32_t value = adler32(0L, NULL, 0);
       if (GetSize() > 0) {
-        value = adler32(value, GetBuffer(), GetSize());
+        value = adler32(value, &data_.front(), GetSize());
       }
 
       return value;
     }
 
     void Reserve(uint32_t size) {data_.reserve(size);}
-    void Resize(uint32_t size) {data_.resize(size);}
-    uint32_t GetSize() const {return data_.size();}
+    void Resize(uint32_t size) {
+      data_.resize(size);
+      size_ = size;
+      readIndex_ = 0;
+    }
+    void ResizeWithSlack(uint32_t size, uint32_t slack) {
+      data_.resize(size + slack);
+      size_ = size;
+      readIndex_ = 0;
+    }
+    uint32_t GetSize() const {return size_;}
 
   private:
 
     std::vector<uint8_t> data_;
     uint32_t readIndex_;
+    uint32_t size_;
 };
 
 #endif // XCDF_FRAME_BUFFER_INCLUDED_H

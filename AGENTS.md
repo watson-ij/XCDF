@@ -26,25 +26,34 @@ Important read paths:
 - alias/expression evaluation
 - stream-based input
 
-## Benchmarking workflow
+## Nix commands: do not hand-expand build commands
 
-Use the Nix dev shell when possible:
+Use flake apps. They configure/build into `build-nix` automatically and keep
+CMake/Ninja chatter on stderr so benchmark CSV redirected from stdout stays
+parseable.
 
 ```sh
-nix develop --command cmake -S . -B build-nix -DBUILD_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release -G Ninja
-nix develop --command cmake --build build-nix
+nix run .#build   # configure + build
+nix run .#test    # configure + build + ctest --output-on-failure
+nix run .#perf -- [xcdf-perf-test args]
+```
+
+Override the build dir if needed:
+
+```sh
+XCDF_BUILD_DIR=/tmp/xcdf-build nix run .#test
 ```
 
 Run correctness tests before and after code changes:
 
 ```sh
-nix develop --command ctest --test-dir build-nix --output-on-failure
+nix run .#test
 ```
 
 Run the synthetic/feature benchmark suite:
 
 ```sh
-nix develop --command ./build-nix/xcdf-perf-test --events 100000 --repetitions 5 --seek-count 10000 --output-dir /tmp --csv
+nix run .#perf -- --events 100000 --repetitions 5 --seek-count 10000 --output-dir /tmp --csv > candidate.csv
 ```
 
 For real HAWC trigger data, generate a local slice from the large trigger file:
@@ -56,7 +65,7 @@ bench/make_hawc_trig_slice.sh trig_run005113_00001.xcd perf-fixtures/hawc_trig_5
 Then benchmark it:
 
 ```sh
-nix develop --command ./build-nix/xcdf-perf-test \
+nix run .#perf -- \
   --scenario hawc_trig_fixture \
   --fixture perf-fixtures/hawc_trig_500k.xcd \
   --events 500000 \
@@ -75,11 +84,47 @@ The benchmark CSV includes metadata rows with XCDF version, git hash, compiler,
 hostname, uname, CPU model, event count, seek count, and fixture path. Preserve
 that metadata when sharing results between machines.
 
+## Existing benchmark CSVs and fixture workflow
+
+This checkout may already have local, ignored benchmark fixtures/results under
+`perf-fixtures/`. Check there before regenerating anything:
+
+```sh
+ls perf-fixtures
+```
+
+Known useful local files in this working tree have included:
+
+- `perf-fixtures/hawc_trig_500k.xcd`
+- `perf-fixtures/hawc_trig_500k_baseline.csv`
+- `perf-fixtures/hawc_trig_500k_combined_candidate.csv`
+- other candidate CSVs from intermediate optimization attempts
+
+Compare a new candidate against the saved baseline with:
+
+```sh
+nix run .#perf -- \
+  --scenario hawc_trig_fixture \
+  --fixture perf-fixtures/hawc_trig_500k.xcd \
+  --events 500000 \
+  --repetitions 3 \
+  --seek-count 10000 \
+  --csv > perf-fixtures/hawc_trig_500k_current_candidate.csv
+
+bench/compare_perf.py \
+  perf-fixtures/hawc_trig_500k_baseline.csv \
+  perf-fixtures/hawc_trig_500k_current_candidate.csv
+```
+
+The comparison script warns if metadata differs, including git hash/version.
+That is expected when comparing a committed baseline to a dirty candidate, but
+not acceptable for cross-machine comparisons unless intentionally noted.
+
 ## Current local fixture policy
 
-Large `.xcd` data files are ignored by git. Do not commit HAWC data files or
-`perf-fixtures/` outputs. Benchmark fixtures should be regenerated locally from
-available raw files.
+Large `.xcd` data files and generated benchmark CSVs are ignored by git. Do not
+commit HAWC data files or `perf-fixtures/` outputs. Benchmark fixtures should be
+regenerated locally from available raw files when missing.
 
 ## Coding guidelines
 

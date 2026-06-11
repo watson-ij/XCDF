@@ -34,6 +34,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cstring>
 #include <stdint.h>
 #include <cassert>
+#include <limits>
 
 class XCDFBlockData {
 
@@ -69,24 +70,38 @@ class XCDFBlockData {
       }
     }
 
-    void SkipDatum(const unsigned size) {
-      unsigned tot = size + buffer_.indexBits_;
-      buffer_.index_    += tot >> 3;   // tot/8
-      buffer_.indexBits_ = tot & 0x07; // tot%8
+    void SkipDatum(uint64_t size) {
+      size += buffer_.indexBits_;
+      uint64_t bytes = size >> 3;   // size/8
+      if (bytes > std::numeric_limits<unsigned>::max() - buffer_.index_) {
+        XCDFFatal("Block data skip overflow");
+      }
+      buffer_.index_    += static_cast<unsigned>(bytes);
+      buffer_.indexBits_ = static_cast<unsigned>(size & 0x07); // size%8
     }
 
     void Clear() {buffer_.Clear();}
 
     void Shrink() {buffer_.Shrink();}
 
-    void UnpackFrame(XCDFFrame& frame) {
+    void UnpackFrame(const XCDFFrame& frame) {
 
-      buffer_.Clear();
       assert(frame.GetType() == XCDF_BLOCK_DATA);
 
-      // Ensure a full 64-bit value will fit in the allocated space
-      buffer_.Reserve(frame.GetDataSize() + 8);
+      // Borrow the frame payload for reads instead of copying every inflated
+      // block into a second buffer.  XCDFFrame keeps 8 bytes of slack after the
+      // logical payload so the little-endian bit reader can safely load a
+      // 64-bit word at the end of the block.
+      buffer_.UseExternal(frame.GetData(), frame.GetDataSize());
+    }
 
+    void UnpackFrameCopy(const XCDFFrame& frame) {
+
+      assert(frame.GetType() == XCDF_BLOCK_DATA);
+
+      // Ensure a full 64-bit value will fit in the allocated space.
+      buffer_.Clear();
+      buffer_.Reserve(frame.GetDataSize() + 8);
       buffer_.Insert(frame.GetDataSize(), frame.GetData());
     }
 
@@ -112,7 +127,8 @@ class XCDFBlockData {
 
         BitBuffer() : capacity_(1300),
                       index_(0),
-                      indexBits_(0) {
+                      indexBits_(0),
+                      ownsData_(true) {
 
           data_ = static_cast<char*>(malloc(capacity_));
           if (!data_) {
@@ -123,7 +139,8 @@ class XCDFBlockData {
         BitBuffer(const BitBuffer& buffer) :
                             capacity_(buffer.capacity_),
                             index_(buffer.index_),
-                            indexBits_(buffer.indexBits_) {
+                            indexBits_(buffer.indexBits_),
+                            ownsData_(true) {
 
           data_ = static_cast<char*>(malloc(capacity_));
           memmove(data_, buffer.data_, capacity_);
@@ -135,6 +152,16 @@ class XCDFBlockData {
             return *this;
           }
 
+          if (!ownsData_ || capacity_ < buffer.capacity_) {
+            if (ownsData_) {
+              free(data_);
+            }
+            data_ = static_cast<char*>(malloc(buffer.capacity_));
+            if (!data_) {
+              XCDFFatal("Failed to allocate internal data buffer");
+            }
+            ownsData_ = true;
+          }
           capacity_ = buffer.capacity_;
           index_ = buffer.index_;
           indexBits_ = buffer.indexBits_;
@@ -142,7 +169,11 @@ class XCDFBlockData {
           return *this;
         }
 
-        ~BitBuffer() {free(data_);}
+        ~BitBuffer() {
+          if (ownsData_) {
+            free(data_);
+          }
+        }
 
         void Reserve(const unsigned capacity) {
           if (capacity > capacity_) {
@@ -177,9 +208,23 @@ class XCDFBlockData {
             memmove(tempData, data_, index_);
           }
 
-          free(data_);
+          if (ownsData_) {
+            free(data_);
+          }
           data_ = tempData;
           capacity_ = capacity;
+          ownsData_ = true;
+        }
+
+        void UseExternal(const char* data, const unsigned size) {
+          if (ownsData_) {
+            free(data_);
+          }
+          data_ = const_cast<char*>(data);
+          capacity_ = size;
+          index_ = 0;
+          indexBits_ = 0;
+          ownsData_ = false;
         }
 
         void Insert(const unsigned size, const char* data) {
@@ -187,10 +232,18 @@ class XCDFBlockData {
           if (size > capacity_) {
             Reserve(size);
           }
-          memmove(data_, data, size);
+          memcpy(data_, data, size);
         }
 
         void Clear() {
+          if (!ownsData_) {
+            capacity_ = 1300;
+            data_ = static_cast<char*>(malloc(capacity_));
+            if (!data_) {
+              XCDFFatal("Failed to allocate internal data buffer");
+            }
+            ownsData_ = true;
+          }
           index_ = 0;
           indexBits_ = 0;
         }
@@ -204,6 +257,7 @@ class XCDFBlockData {
         unsigned index_;
         unsigned indexBits_;
         char* data_;
+        bool ownsData_;
     };
 
     BitBuffer buffer_;

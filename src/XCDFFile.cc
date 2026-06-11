@@ -31,6 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string>
 #include <cstring>
 #include <fstream>
+#include <algorithm>
 
 namespace {
 void EnableActiveMaxTracking(XCDFFieldDataBase& base) {
@@ -604,7 +605,13 @@ bool XCDFFile::ReadNextBlock() {
       FieldListForEach(ShrinkField);
     }
 
-    blockData_.UnpackFrame(currentFrame_);
+    if (isAppend_) {
+      // Append preparation rewrites events from the just-read block while the
+      // next input frame may be read, so keep an owned block-data copy there.
+      blockData_.UnpackFrameCopy(currentFrame_);
+    } else {
+      blockData_.UnpackFrame(currentFrame_);
+    }
     blockCount_++;
     return true;
 
@@ -1002,28 +1009,27 @@ bool XCDFFile::Seek(uint64_t absoluteEventPos) {
         return false;
       }
 
-      // Find the appropriate block
-      uint64_t pos = 0;
-      uint64_t nextEventNumber = 0;
-      uint64_t blockNumber = 0;
-      for (std::vector<XCDFBlockEntry>::const_iterator
-                          it = fileTrailer_.BlockEntriesBegin();
-                          it != fileTrailer_.BlockEntriesEnd(); ++it) {
+      // Find the appropriate block.  The block table is ordered by the first
+      // event in each block, so use binary search rather than scanning from the
+      // beginning for every random seek.
+      std::vector<XCDFBlockEntry>::const_iterator begin =
+          fileTrailer_.BlockEntriesBegin();
+      std::vector<XCDFBlockEntry>::const_iterator end =
+          fileTrailer_.BlockEntriesEnd();
+      std::vector<XCDFBlockEntry>::const_iterator it =
+          std::upper_bound(begin, end, absoluteEventPos,
+                           [](uint64_t value, const XCDFBlockEntry& entry) {
+                             return value < entry.nextEventNumber_;
+                           });
 
-        if (it->nextEventNumber_ > absoluteEventPos) {
-          if (pos == 0) {
-            pos = it->filePtr_;
-            nextEventNumber = it->nextEventNumber_;
-            blockNumber = it - fileTrailer_.BlockEntriesBegin();
-          }
-          break;
-        }
-        pos = it->filePtr_;
-        nextEventNumber = it->nextEventNumber_;
-        blockNumber = it - fileTrailer_.BlockEntriesBegin();
+      if (it != begin) {
+        --it;
       }
 
-      if (pos != 0) {
+      if (it != end) {
+        uint64_t pos = it->filePtr_;
+        uint64_t nextEventNumber = it->nextEventNumber_;
+        uint64_t blockNumber = it - begin;
         // Load the block
         if (DoSeek(pos)) {
           ReadNextBlock();

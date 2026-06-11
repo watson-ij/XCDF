@@ -89,14 +89,11 @@ class XCDFFrame {
       }
 
       if (deflate) {
-        o.write(reinterpret_cast<char*>(&deflatedType), 4);
-        o.write(reinterpret_cast<char*>(&size), 4);
-        o.write(reinterpret_cast<char*>(&checksum), 4);
-        o.write(reinterpret_cast<char*>(&type), 4);
+        uint32_t header[4] = {deflatedType, size, checksum, type};
+        o.write(reinterpret_cast<char*>(header), sizeof(header));
       } else {
-        o.write(reinterpret_cast<char*>(&type), 4);
-        o.write(reinterpret_cast<char*>(&size), 4);
-        o.write(reinterpret_cast<char*>(&checksum), 4);
+        uint32_t header[3] = {type, size, checksum};
+        o.write(reinterpret_cast<char*>(header), sizeof(header));
       }
 
       if (buffer_.GetSize() > 0) {
@@ -110,10 +107,15 @@ class XCDFFrame {
     // Verify frame type before allocating and reading data
     void Read(std::istream& i) {
 
-      uint32_t type, size, checksum;
-      i.read(reinterpret_cast<char*>(&type), 4);
-      i.read(reinterpret_cast<char*>(&size), 4);
-      i.read(reinterpret_cast<char*>(&checksum), 4);
+      uint32_t header[4];
+      i.read(reinterpret_cast<char*>(header), 3 * sizeof(uint32_t));
+      if (i.fail()) {
+        return;
+      }
+
+      uint32_t type = header[0];
+      uint32_t size = header[1];
+      uint32_t checksum = header[2];
 
       if (IsBigEndian()) {
         ConvertEndian(type);
@@ -124,7 +126,11 @@ class XCDFFrame {
       bool deflated = false;
       if (static_cast<XCDFFrameType>(type) == XCDF_DEFLATED_FRAME) {
         deflated = true;
-        i.read(reinterpret_cast<char*>(&type), 4);
+        i.read(reinterpret_cast<char*>(&header[3]), sizeof(uint32_t));
+        if (i.fail()) {
+          return;
+        }
+        type = header[3];
         if (IsBigEndian()) {
           ConvertEndian(type);
         }
@@ -144,7 +150,7 @@ class XCDFFrame {
       // If size field is corrupt, this could potentially allocate 4GB.
       // Ignore.  Checksum should fail and program should end.
       buffer_.Clear();
-      buffer_.Resize(size);
+      buffer_.ResizeWithSlack(size, 8);
       if (size > 0) {
         i.read(reinterpret_cast<char*>(buffer_.GetBuffer()), size);
       }
@@ -213,14 +219,11 @@ class XCDFFrame {
 
     void Clear() {buffer_.Clear();}
 
-    const char* GetData() {
-      if (buffer_.GetSize() == 0) {
-        return NULL;
-      }
-      return reinterpret_cast<const char*>(buffer_.Get(buffer_.GetSize()));
+    const char* GetData() const {
+      return reinterpret_cast<const char*>(buffer_.GetDataPointer());
     }
 
-    void PutData(uint32_t size, char* data) {
+    void PutData(uint32_t size, const char* data) {
       buffer_.Insert(size, reinterpret_cast<const uint8_t*>(data));
     }
     uint32_t GetDataSize() const {return buffer_.GetSize();}

@@ -49,6 +49,7 @@ void DeflateVector(std::vector<uint8_t>& in, std::vector<uint8_t>& out) {
     XCDFFatal("Unable to initialize zlib deflate");
   }
 
+  out.reserve(in.size());
   uint8_t output[CHUNKSIZE];
   uint8_t* input = &(in.front());
   uint8_t* end = input + in.size();
