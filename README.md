@@ -15,6 +15,12 @@ and can be found at https://readthedocs.org/projects/xcdf/.
 - a C++ compiler with full support for the C++11 standard
 - Python >= 3.7
 
+## AI assistance disclosure
+
+Recent read-side performance improvements and benchmark infrastructure were
+implemented by a user contributor with assistance from GPT-based coding tools.
+The changes were tested and benchmarked before being proposed for inclusion.
+
 ## Overview
 
   The eXplicitly Compacted Data Format (XCDF) is written and maintained by Jim
