@@ -120,6 +120,92 @@ struct DictBuilder {
   }
 };
 
+
+// Values of selected fields over many records, concatenated per field: the per-record dict of every field that
+// ``__next__`` builds costs far more than the decode when a reader needs a few fields of thousands of records.
+template <typename T>
+struct Gathered {
+  std::vector<T> values;
+  std::vector<int64_t> counts;
+};
+
+template <typename T, typename F>
+void gather_one(const F &field, Gathered<T> &g) {
+  const size_t n = field.GetSize();
+  for (size_t i = 0; i < n; i++) {
+    g.values.push_back(field[i]);
+  }
+  g.counts.push_back(static_cast<int64_t>(n));
+}
+
+template <typename T>
+py::tuple to_arrays(Gathered<T> &g) {
+  py::array_t<T> v(g.values.size());
+  std::copy(g.values.begin(), g.values.end(), static_cast<T *>(v.request().ptr));
+  py::array_t<int64_t> c(g.counts.size());
+  std::copy(g.counts.begin(), g.counts.end(), static_cast<int64_t *>(c.request().ptr));
+  return py::make_tuple(v, c);
+}
+
+py::dict read_fields(XCDFFile &self, py::array_t<int64_t, py::array::c_style | py::array::forcecast> rows,
+                     const std::vector<std::string> &names, int64_t max_gap) {
+  auto r = rows.unchecked<1>();
+  const py::ssize_t n = r.shape(0);
+  std::vector<std::string> kind;  // "u", "i", "f" per name
+  std::vector<Gathered<uint64_t>> gu(names.size());
+  std::vector<Gathered<int64_t>> gi(names.size());
+  std::vector<Gathered<double>> gf(names.size());
+  for (const auto &name : names) {
+    if (!self.HasField(name)) {
+      throw py::key_error("no field " + name);
+    }
+    kind.push_back(self.IsUnsignedIntegerField(name) ? "u" : self.IsSignedIntegerField(name) ? "i" : "f");
+  }
+  {
+    py::gil_scoped_release release;
+    int64_t prev = -2;
+    for (py::ssize_t k = 0; k < n; k++) {
+      const int64_t row = r(k);
+      if (prev >= 0 && row > prev + 1 && row - prev - 1 <= max_gap) {
+        // a short gap: reading through the skipped records is cheaper than a seek
+        for (int64_t s = prev + 1; s < row; s++) {
+          if (self.Read() == 0) {
+            py::gil_scoped_acquire acquire;
+            throw py::index_error("no record at row " + std::to_string(s));
+          }
+        }
+      } else if (row != prev + 1) {
+        // the same positioning as the Python iterator: after seek(j) the next record read is j + 1
+        bool ok = row == 0 ? self.Rewind() : self.Seek(static_cast<uint64_t>(row - 1));
+        if (!ok) {
+          py::gil_scoped_acquire acquire;
+          throw py::index_error("cannot position before row " + std::to_string(row));
+        }
+      }
+      if (self.Read() == 0) {
+        py::gil_scoped_acquire acquire;
+        throw py::index_error("no record at row " + std::to_string(row));
+      }
+      prev = row;
+      for (size_t j = 0; j < names.size(); j++) {
+        if (kind[j] == "u") {
+          gather_one(self.GetUnsignedIntegerField(names[j]), gu[j]);
+        } else if (kind[j] == "i") {
+          gather_one(self.GetSignedIntegerField(names[j]), gi[j]);
+        } else {
+          gather_one(self.GetFloatingPointField(names[j]), gf[j]);
+        }
+      }
+    }
+  }
+  py::dict out;
+  for (size_t j = 0; j < names.size(); j++) {
+    py::str key = names[j];
+    out[key] = kind[j] == "u" ? to_arrays(gu[j]) : kind[j] == "i" ? to_arrays(gi[j]) : to_arrays(gf[j]);
+  }
+  return out;
+}
+
 PYBIND11_MODULE(xcdf, m) {
 
   m.attr("__version__") = getVersion();
@@ -274,6 +360,13 @@ PYBIND11_MODULE(xcdf, m) {
       .def("rewind", &XCDFFile::Rewind,
            "Return the file to a state where calling Read() gives the starting "
            "event, if possible.")
+      .def("read_fields", &read_fields, py::arg("rows"), py::arg("names"), py::arg("max_gap") = 0,
+           R"pbdoc(
+        Read the given fields of the records at ``rows`` (absolute positions, any order; consecutive rows are read
+        without seeking, and so are gaps of at most ``max_gap`` records, which are read and dropped).  Returns ``{name: (values, counts)}``: ``values`` the field's entries of every record
+        concatenated (float64, uint64 or int64 by field type), ``counts`` [len(rows)] the entries per record
+        (0 or 1 for a scalar field).  Leaves the file positioned after the last row read.
+        )pbdoc")
       .def("__len__", &XCDFFile::GetEventCount,
            "Return the total number of events in the file.")
       .def("__in__", &XCDFFile::HasField,
